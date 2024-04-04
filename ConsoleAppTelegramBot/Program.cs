@@ -53,30 +53,87 @@ internal class Program
         {
             return;
         }
-
         TelegramBotTestContext context = new TelegramBotTestContext();
-        ConsoleAppTelegramBot.Models.User finduser = context.Users.FirstOrDefault(x => x.Idtelegram == update.CallbackQuery.Message!.Chat.Id)!;
+        var listadmin = context.Admins.ToList();
+        if (listadmin.Any(x => x.Idtelegram == update.CallbackQuery.Message!.Chat.Id))
+        {
+            await HandleCallBackAdminAsync(botClient, update, cancellationToken);
+            return;
+        }
+
+        int wavelast = context.Waves.OrderByDescending(x => x.Id).First().Id;
+        ConsoleAppTelegramBot.Models.User finduser = context.Users.FirstOrDefault(x => x.Idtelegram == update.CallbackQuery.Message!.Chat.Id && x.Wave == wavelast)!;
         if (finduser == null)
         {
-            ConsoleAppTelegramBot.Models.User user = new ConsoleAppTelegramBot.Models.User();
-            user.FullName = update.CallbackQuery.Message!.Chat.Username!;
-            user.Idtelegram = update.CallbackQuery.Message!.Chat.Id;
-            user.NubmerPc = int.Parse(update.CallbackQuery.Data!);
-            user.Wave = context.Waves.OrderByDescending(x => x.Id).First().Id;
-            context.Users.Add(user);
+            await SaveDataUserAsync(botClient, update, cancellationToken);
+            return;
+        }
+        ReplyKeyboardMarkup replyKeyboardMarkup = new(new[] { new KeyboardButton[] { "Дай мне фото" }, }) { ResizeKeyboard = true };
+        await botClient.SendTextMessageAsync(
+            chatId: update.CallbackQuery!.Message!.Chat.Id,
+            text: "Вы уже зарегистрированны!",
+            replyMarkup: replyKeyboardMarkup,
+            cancellationToken: cancellationToken);
+    }
+
+    private static async Task HandleCallBackAdminAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
+    {
+        var callback = update.CallbackQuery;
+        if (callback!.Data == "no")
+        {
+            await botClient.DeleteMessageAsync(callback.Message!.Chat.Id, callback.Message.MessageId, cancellationToken);
+            return;
+        }
+        if (callback!.Data!.Contains("del"))
+        {
+            TelegramBotTestContext context = new TelegramBotTestContext();
+            var iduser = int.Parse(callback!.Data!.Replace("del", ""));
+            var user = context.Users.First(x => x.Id == iduser);
+            context.Users.Remove(user);
             await context.SaveChangesAsync();
 
-
-            ReplyKeyboardMarkup replyKeyboardMarkup = new(new[] { new KeyboardButton[] { "Дай мне фото" }, }) { ResizeKeyboard = true };
+            await botClient.DeleteMessageAsync(callback.Message!.Chat.Id, callback.Message.MessageId, cancellationToken);
 
             await botClient.SendTextMessageAsync(
-                chatId: update.CallbackQuery.Message!.Chat.Id,
-                text: "Данные сохранены!",
-                replyMarkup: replyKeyboardMarkup,
-                cancellationToken: cancellationToken);
-
-            await AdminSending(botClient, update, cancellationToken, user);
+               chatId: update.CallbackQuery!.Message!.Chat.Id,
+               text: $"Пользователь {user.Idtelegram} {user.FullName} удалён",
+               replyMarkup: new ReplyKeyboardRemove(),
+               cancellationToken: cancellationToken);
+            return;
         }
+    }
+    private static async Task SaveDataUserAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
+    {
+        TelegramBotTestContext context = new TelegramBotTestContext();
+        int wavelast = context.Waves.OrderByDescending(x => x.Id).First().Id;
+        int pc = int.Parse(update.CallbackQuery!.Data!);
+        if (context.Users.Any(x => x.NubmerPc == pc && x.Wave == wavelast))
+        {
+            await botClient.SendTextMessageAsync(
+            chatId: update.CallbackQuery!.Message!.Chat.Id,
+            text: "Данный компьютер занят",
+            cancellationToken: cancellationToken);
+            return;
+        }
+
+        ConsoleAppTelegramBot.Models.User user = new ConsoleAppTelegramBot.Models.User();
+        user.FullName = update.CallbackQuery!.Message!.Chat.Username!;
+        user.Idtelegram = update.CallbackQuery.Message!.Chat.Id;
+        user.NubmerPc = pc;
+        user.Wave = context.Waves.OrderByDescending(x => x.Id).First().Id;
+        context.Users.Add(user);
+        await context.SaveChangesAsync();
+
+
+        ReplyKeyboardMarkup replyKeyboardMarkup = new(new[] { new KeyboardButton[] { "Отправить фото" }, }) { ResizeKeyboard = true };
+
+        await botClient.SendTextMessageAsync(
+            chatId: update.CallbackQuery.Message!.Chat.Id,
+            text: "Данные сохранены!",
+            replyMarkup: replyKeyboardMarkup,
+            cancellationToken: cancellationToken);
+
+        await AdminSending(botClient, update, cancellationToken, user);
     }
     private static async Task AdminSending(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken, ConsoleAppTelegramBot.Models.User user)
     {
@@ -96,7 +153,6 @@ internal class Program
         var listadmin = testContext.Admins.ToList();
         foreach (var item in listadmin)
         {
-
             await botClient.SendTextMessageAsync(
                chatId: item.Idtelegram,
                text: $"Перешли на волну {wave}",
@@ -166,12 +222,51 @@ internal class Program
 
                 System.IO.File.Delete(localpath);
                 await AdminSendingPhotoAdd(botClient, update, cancellationToken, user);
+                return;
             }
-            return;
+            if (update.Message!.Caption!.ToLower().Contains("up"))
+            {
+                var iduser = int.Parse(update.Message!.Caption.ToLower().Replace("up", ""));
+                ConsoleAppTelegramBot.Models.User user;
+                try
+                {
+                    user = testContext.Users.First(x => x.Id == iduser);
+                }
+                catch
+                {
+                    await botClient.SendTextMessageAsync(
+                           chatId: update.Message!.Chat.Id,
+                           text: "Пользователь не найден",
+                           cancellationToken: cancellationToken);
+                    return;
+                }
+                var fileId = update.Message!.Photo!.Last().FileId;
+                var fileInfo = await botClient.GetFileAsync(fileId);
+                var filePath = fileInfo.FilePath;
+
+                string url = @$"https://api.telegram.org/file/bot{ConsoleAppTelegramBot.Properties.Resources.Token}/{filePath}";
+                string newnamefile = $@"{Thread.CurrentThread.ManagedThreadId}{Path.GetFileName(filePath!)}";
+                string localpath = @$"Images\{newnamefile}";
+
+                using (var client = new HttpClient())
+                {
+                    using (var s = client.GetStreamAsync(url))
+                    {
+                        using (var fs = new FileStream(localpath, FileMode.OpenOrCreate))
+                        {
+                            s.Result.CopyTo(fs);
+                        }
+                    }
+                }
+
+                user.Image = System.IO.File.ReadAllBytes(localpath);
+                await testContext.SaveChangesAsync();
+
+                System.IO.File.Delete(localpath);
+                await AdminSendingPhotoAdd(botClient, update, cancellationToken, user);
+                return;
+            }
         }
-
-
-
     }
     private static async Task HandleMessageAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
     {
@@ -182,7 +277,7 @@ internal class Program
         if (message.Text is not { } messageText)
             return;
 
-        var chatId = message.Chat.Id;
+        // var chatId = message.Chat.Id;
         TelegramBotTestContext testContext = new TelegramBotTestContext();
         var listadmin = testContext.Admins.ToList();
         if (listadmin.Any(x => x.Idtelegram == update.Message!.Chat.Id))
@@ -190,8 +285,12 @@ internal class Program
             await AdminMessageHeandler(botClient, update, cancellationToken);
             return;
         }
+        await UserHandleMessageAsync(botClient, update, cancellationToken);
 
-        if (message.Text == "/start")
+    }
+    private static async Task UserHandleMessageAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
+    {
+        if (update.Message!.Text == "/start")
         {
             InlineKeyboardButton[][] inlines = new InlineKeyboardButton[6][];
             for (int i = 1; i < 13; i += 2)
@@ -205,16 +304,17 @@ internal class Program
             }
             InlineKeyboardMarkup inlineKeyboard = new InlineKeyboardMarkup(inlines);
             await botClient.SendTextMessageAsync(
-            chatId: chatId,
+            chatId: update.Message!.Chat.Id,
             text: "Привет выбери номер своего ПК",
             replyMarkup: inlineKeyboard,
             cancellationToken: cancellationToken);
         }
-        if (message.Text == "Дай мне фото")
+        if (update.Message!.Text == "Дай мне фото")
         {
             await UpLoadPhoto(botClient, update, cancellationToken);
         }
     }
+
     private static async Task AdminMessageHeandler(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
     {
         var message = update.Message!;
@@ -225,24 +325,29 @@ internal class Program
              chatId: chatId,
              text: "Команды:\n /DeleteReply - удаляет Reply кнопки " +
              "\n /NextWave - переходит на следующую волну \nВолна это один поток абитуриентов" +
-             "\n /SelectUserOnLastWave - выводит данные последней волны" +
-             "\n /SelectUserWave(НомерВолны) - выводит данные выбранной волны",
+             "\n /SelectLastWave - выводит данные последней волны" +
+             "\n /SelectWave(НомерВолны) - выводит данные выбранной волны" +
+             "\n /SelectAllWaves - выводит строки всех волн" +
+             "\n /SelectAdmins - выводит список всех Администраторов",
              cancellationToken: cancellationToken);
 
             await botClient.SendTextMessageAsync(
                chatId: chatId,
-               text: "Вам будет приходить сообщение при добавлении данных у нового пользователя" +
-               "\n\nДля добаления картинки нового пользователя напишите pc<номерНоутбука> \n(например pc10) в сообщении с фотографией!!!\n" +
-               "Данная фотография добавится пользователю на последней волне на выбранном компьютере",
+               text: "Вам будет приходить уведомления при добавлении и изменении данных у пользователей" +
+               "\n\nДля добавления (изменения) картинки у пользователя на текущей волне напишите pc<номерНоутбука> \n(например pc10)" + "\nв сообщении с фотографией!!!\n".ToUpper() +
+               "\n\nДля добавления (изменения) картинки у пользователя на любой волне напишите up<IDзаписи> \n(например up4)" + "\nв сообщении с фотографией!!!".ToUpper() +
+               "\n\nДля удаления пользователя на любой волне напишите del<IDзаписи> \n(например del7)",
                cancellationToken: cancellationToken);
+            return;
         }
         if (message.Text == "/DeleteReply")
         {
             await botClient.SendTextMessageAsync(
                chatId: chatId,
-               text: "Removing keyboard",
+               text: "Кнопки удалены",
                replyMarkup: new ReplyKeyboardRemove(),
                cancellationToken: cancellationToken);
+            return;
         }
         if (message.Text == "/NextWave")
         {
@@ -252,29 +357,32 @@ internal class Program
             await testContext.SaveChangesAsync();
 
             await AdminSendingWave(botClient, update, cancellationToken, wave);
+            return;
         }
-        if (message.Text == "/SelectUserOnLastWave")
+        if (message.Text == "/SelectLastWave")
         {
             TelegramBotTestContext testContext = new TelegramBotTestContext();
-            string text = $"IDTel |\t\tPC |\tImage |\n";
             int wave = testContext.Waves.OrderByDescending(x => x.Id).First().Id;
+            string text = $"Последняя волна - {wave}\n" +
+                          $"ID |\tIDTelegram | PC |\tImage \n";
             foreach (var item in testContext.Users.Where(x => x.Wave == wave))
             {
                 string image = item.Image != null ? "да" : "нет";
-                text += $"{item.Idtelegram} |\t{item.NubmerPc} |\t{image} |\n";
+                text += $"{item.Id} |\t{item.Idtelegram} |\t{item.NubmerPc} |\t{image} \n";
             }
             await botClient.SendTextMessageAsync(
                 chatId: chatId,
                 text: text,
                 cancellationToken: cancellationToken);
+            return;
         }
-        if (message.Text!.Contains("/SelectUserWave"))
+        if (message.Text!.Contains("/SelectWave"))
         {
             TelegramBotTestContext testContext = new TelegramBotTestContext();
             int wave = 0;
             try
             {
-                wave = testContext.Waves.First(x => x.Id == int.Parse(message.Text.Replace("/SelectUserWave", ""))).Id;
+                wave = testContext.Waves.First(x => x.Id == int.Parse(message.Text.Replace("/SelectWave", ""))).Id;
             }
             catch
             {
@@ -284,16 +392,82 @@ internal class Program
                        cancellationToken: cancellationToken);
                 return;
             }
-            string text = $"IDTel |\t\tPC |\tImage |\n";
+            string text = $"ID |\tIDTelegram | PC |\tImage \n";
             foreach (var item in testContext.Users.Where(x => x.Wave == wave))
             {
                 string image = item.Image != null ? "да" : "нет";
-                text += $"{item.Idtelegram} |\t{item.NubmerPc} |\t{image} |\n";
+                text += $"{item.Id} |\t{item.Idtelegram} |\t{item.NubmerPc} |\t{image} \n";
             }
             await botClient.SendTextMessageAsync(
                chatId: chatId,
                text: text,
                cancellationToken: cancellationToken);
+            return;
+        }
+        if (message.Text == "/SelectAllWaves")
+        {
+            TelegramBotTestContext testContext = new TelegramBotTestContext();
+            string text = $"ID |\tIDTelegram | PC |\tImage \n";
+            foreach (var item in testContext.Users)
+            {
+                string image = item.Image != null ? "да" : "нет";
+                text += $"{item.Id} |\t{item.Idtelegram} |\t{item.NubmerPc} |\t{image} \n";
+            }
+            await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: text,
+                cancellationToken: cancellationToken);
+            return;
+        }
+        if (message.Text == "/SelectAdmins")
+        {
+            TelegramBotTestContext testContext = new TelegramBotTestContext();
+            string text = $"Список администраторов:\n" +
+                          $"IDTelegram\t|\tPC \n";
+            foreach (var item in testContext.Admins)
+            {
+                text += $"{item.Idtelegram}\t|\t{item.Name}\n";
+            }
+            await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: text,
+                cancellationToken: cancellationToken);
+            return;
+        }
+        if (message.Text!.ToLower().Contains("del"))
+        {
+            TelegramBotTestContext testContext = new TelegramBotTestContext();
+            var iduser = int.Parse(update.Message!.Text!.ToLower().Replace("del", ""));
+            ConsoleAppTelegramBot.Models.User user;
+            try
+            {
+                user = testContext.Users.First(x => x.Id == iduser);
+            }
+            catch
+            {
+                await botClient.SendTextMessageAsync(
+                       chatId: update.Message!.Chat.Id,
+                       text: "Пользователь не найден",
+                       cancellationToken: cancellationToken);
+                return;
+            }
+
+            InlineKeyboardMarkup inlineKeyboard = new InlineKeyboardMarkup(new[]
+            {
+                new[]
+                {
+                    InlineKeyboardButton.WithCallbackData(text: $"Да", callbackData: $"del{user.Id}"),
+                    InlineKeyboardButton.WithCallbackData(text: $"Нет", callbackData: $"no"),
+                }
+            });
+
+            Message message1 = await botClient.SendTextMessageAsync(
+            chatId: update.Message!.Chat.Id,
+            text: $"Вы действительно хотите удалить пользователя {user.Idtelegram} {user.FullName} с ID - {user.Id}?",
+            replyMarkup: inlineKeyboard,
+            cancellationToken: cancellationToken);
+
+            return;
         }
     }
     private static async Task UpLoadPhoto(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
@@ -301,25 +475,28 @@ internal class Program
         var chatId = update.Message!.Chat.Id;
 
         TelegramBotTestContext testContext = new TelegramBotTestContext();
-        ConsoleAppTelegramBot.Models.User user = testContext.Users.FirstOrDefault(x => x.Idtelegram == chatId)!;
-        if (user != null)
+        List<ConsoleAppTelegramBot.Models.User> users = testContext.Users.Where(x => x.Idtelegram == chatId)!.ToList();
+        if (users != null)
         {
-            if (user.Image == null)
+            foreach (var user in users)
             {
-                await botClient.SendTextMessageAsync(
-                chatId: chatId,
-                text: "Фото ещё не загружено!",
-                cancellationToken: cancellationToken);
-                return;
-            }
-            Stream stream = new MemoryStream(user.Image);
+                if (user.Image == null)
+                {
+                    await botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "Фото ещё не загружено!",
+                    cancellationToken: cancellationToken);
+                    continue;
+                }
+                Stream stream = new MemoryStream(user.Image);
 
-            await botClient.SendPhotoAsync(
-            chatId: chatId,
-            photo: InputFile.FromStream(stream),
-            caption: @$"<b> Вот Ваша фотография {user.FullName} </b>",
-            parseMode: ParseMode.Html,
-            cancellationToken: cancellationToken);
+                await botClient.SendPhotoAsync(
+                chatId: chatId,
+                photo: InputFile.FromStream(stream),
+                caption: @$"<b> Вот Ваша фотография {user.FullName} </b>",
+                parseMode: ParseMode.Html,
+                cancellationToken: cancellationToken);
+            }
         }
     }
     private static Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)

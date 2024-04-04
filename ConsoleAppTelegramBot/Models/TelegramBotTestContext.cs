@@ -24,7 +24,7 @@ namespace ConsoleAppTelegramBot.Models
         {
             if (!optionsBuilder.IsConfigured)
             {
-                optionsBuilder.UseSqlServer("Data Source=.\\SQLEXPRESS;Initial Catalog=TelegramBotTest; Integrated Security=True;");
+                optionsBuilder.UseSqlServer(@"Data Source=АНТОН-ПК\FIERY;Initial Catalog=TelegramBotTest; Integrated Security=True;");
             }
         }
 
